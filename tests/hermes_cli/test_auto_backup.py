@@ -12,6 +12,8 @@ Covers:
 from __future__ import annotations
 
 import json
+import logging
+import threading
 import zipfile
 from argparse import Namespace
 from datetime import datetime, timedelta, timezone
@@ -20,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from hermes_cli import backup as B
+from hermes_cli.config_defaults import DEFAULT_CONFIG
 
 
 # ---------------------------------------------------------------------------
@@ -29,9 +32,9 @@ from hermes_cli import backup as B
 def _make_home(tmp_path: Path) -> Path:
     home = tmp_path / ".hermes"
     home.mkdir()
-    (home / "config.yaml").write_text("model:\n  provider: openrouter\n")
+    (home / "config.yaml").write_text("model:\n  provider: openrouter\n", encoding="utf-8")
     (home / "skills").mkdir()
-    (home / "skills" / "SKILL.md").write_text("# skill\n")
+    (home / "skills" / "SKILL.md").write_text("# skill\n", encoding="utf-8")
     return home
 
 
@@ -43,13 +46,13 @@ def _state(home: Path) -> dict:
     path = home / "backups" / B._AUTO_STATE_FILE
     if not path.exists():
         return {}
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _write_state(home: Path, state: dict) -> None:
     backups = home / "backups"
     backups.mkdir(exist_ok=True)
-    (backups / B._AUTO_STATE_FILE).write_text(json.dumps(state))
+    (backups / B._AUTO_STATE_FILE).write_text(json.dumps(state), encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +60,14 @@ def _write_state(home: Path, state: dict) -> None:
 # ---------------------------------------------------------------------------
 
 class TestScheduleParsing:
+    def test_default_config_declares_disabled_backup_schema(self):
+        assert DEFAULT_CONFIG["backup"] == {
+            "enabled": False,
+            "schedule": "daily",
+            "keep_last": 7,
+            "dir": None,
+        }
+
     def test_named_schedules(self):
         assert B._auto_backup_interval_hours({"schedule": "hourly"}) == 1.0
         assert B._auto_backup_interval_hours({"schedule": "daily"}) == 24.0
@@ -111,6 +122,25 @@ class TestMaybeCreateAutoBackup:
         state = _state(home)
         assert state["last_status"] == "ok"
         assert state["last_run_at"]
+
+    def test_active_profile_is_source_and_default_destination(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        profile = root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        (root / "root-only.txt").write_text("root", encoding="utf-8")
+        (profile / "profile-only.txt").write_text("profile", encoding="utf-8")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        _set_cfg(monkeypatch, {"enabled": True})
+
+        result = B.maybe_create_auto_backup()
+
+        assert result is not None
+        assert result.parent == profile / "backups"
+        with zipfile.ZipFile(result) as zf:
+            names = set(zf.namelist())
+        assert "profile-only.txt" in names
+        assert "root-only.txt" not in names
 
     def test_not_due_returns_none(self, tmp_path, monkeypatch):
         home = _make_home(tmp_path)
@@ -188,6 +218,53 @@ class TestMaybeCreateAutoBackup:
         assert result is not None
         assert result.parent == dest
 
+    def test_custom_dir_inside_hermes_home_falls_back_without_recursion(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        home = _make_home(tmp_path)
+        unsafe_dest = home / "scheduled-backups"
+        _set_cfg(monkeypatch, {"enabled": True, "dir": str(unsafe_dest)})
+        first_now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        with caplog.at_level(logging.WARNING):
+            first = B.maybe_create_auto_backup(hermes_home=home, now=first_now)
+            second = B.maybe_create_auto_backup(
+                hermes_home=home,
+                now=first_now + timedelta(hours=25),
+            )
+
+        assert first is not None and second is not None
+        assert first.parent == home / "backups"
+        assert second.parent == home / "backups"
+        assert not unsafe_dest.exists()
+        assert "inside HERMES_HOME" in caplog.text
+        with zipfile.ZipFile(second) as zf:
+            assert not any(name.startswith("scheduled-backups/") for name in zf.namelist())
+
+    def test_gateway_housekeeping_polls_auto_backup_hourly(self, monkeypatch):
+        from gateway import run as gateway_run
+
+        calls = []
+        monkeypatch.setattr(B, "maybe_create_auto_backup", lambda: calls.append(True))
+
+        class StopAfterHour(threading.Event):
+            def __init__(self):
+                super().__init__()
+                self.waits = 0
+
+            def is_set(self):
+                return self.waits >= 60
+
+            def wait(self, timeout=None):
+                self.waits += 1
+                return self.is_set()
+
+        gateway_run._start_gateway_housekeeping(
+            StopAfterHour(), adapters=None, loop=None, interval=0
+        )
+
+        assert calls == [True]
+
     def test_missing_home_returns_none(self, tmp_path, monkeypatch):
         _set_cfg(monkeypatch, {"enabled": True})
         assert B.maybe_create_auto_backup(hermes_home=tmp_path / "nope") is None
@@ -220,6 +297,23 @@ class TestMaybeCreateAutoBackup:
 # ---------------------------------------------------------------------------
 
 class TestListArchives:
+    def test_default_listing_is_scoped_to_active_profile(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        profile = root / "profiles" / "work"
+        root_backups = root / "backups"
+        profile_backups = profile / "backups"
+        root_backups.mkdir(parents=True)
+        profile_backups.mkdir(parents=True)
+        (root_backups / "root.zip").write_bytes(b"root")
+        (profile_backups / "profile.zip").write_bytes(b"profile")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        _set_cfg(monkeypatch, {})
+
+        archives = B.list_backup_archives()
+
+        assert [archive["path"].name for archive in archives] == ["profile.zip"]
+
     def test_classifies_kinds(self, tmp_path, monkeypatch):
         home = _make_home(tmp_path)
         _set_cfg(monkeypatch, {})
@@ -229,7 +323,7 @@ class TestListArchives:
         (backups / "pre-update-2026-01-02-000000.zip").write_bytes(b"b")
         (backups / "pre-migration-2026-01-03-000000.zip").write_bytes(b"c")
         (backups / "hand-rolled.zip").write_bytes(b"d")
-        (backups / "not-a-backup.txt").write_text("ignored")
+        (backups / "not-a-backup.txt").write_text("ignored", encoding="utf-8")
 
         archives = B.list_backup_archives(hermes_home=home)
         kinds = {a["path"].name: a["kind"] for a in archives}
@@ -267,7 +361,7 @@ class TestListArchives:
     def test_run_backup_list_empty(self, tmp_path, monkeypatch, capsys):
         home = _make_home(tmp_path)
         _set_cfg(monkeypatch, {})
-        monkeypatch.setattr(B, "get_default_hermes_root", lambda: home)
+        monkeypatch.setattr(B, "get_hermes_home", lambda: home)
         B.run_backup_list(Namespace())
         out = capsys.readouterr().out
         assert "No backup archives found" in out
@@ -275,7 +369,7 @@ class TestListArchives:
     def test_run_backup_list_output(self, tmp_path, monkeypatch, capsys):
         home = _make_home(tmp_path)
         _set_cfg(monkeypatch, {})
-        monkeypatch.setattr(B, "get_default_hermes_root", lambda: home)
+        monkeypatch.setattr(B, "get_hermes_home", lambda: home)
         backups = home / "backups"
         backups.mkdir()
         (backups / "auto-2026-01-01-000000.zip").write_bytes(b"x" * 2048)

@@ -2670,6 +2670,19 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # Scheduled full backups. Disabled by default because full HERMES_HOME
+    # archives can be large and expensive to create. The gateway housekeeping
+    # loop polls hourly; ``schedule`` is the real cadence gate.
+    "backup": {
+        "enabled": False,
+        "schedule": "daily",  # hourly | daily | weekly | numeric hours
+        "keep_last": 7,
+        # Optional external/mounted/cloud-synced directory. Paths inside the
+        # active HERMES_HOME fall back to <HERMES_HOME>/backups to prevent a
+        # later archive from recursively including earlier archives.
+        "dir": None,
+    },
+
     # ``hermes update`` behaviour.
     "updates": {
         # Pre-update safety backup — ONE consolidated mechanism, three modes:

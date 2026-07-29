@@ -1515,6 +1515,20 @@ telemetry:
 
 
 # =============================================================================
+# Scheduled Backups
+# =============================================================================
+# Full, importable backups of the active profile's HERMES_HOME. The gateway
+# polls hourly, while schedule controls when a backup is actually due.
+backup:
+  enabled: false
+  schedule: "daily"  # hourly | daily | weekly | numeric hours
+  keep_last: 7
+  # Optional external/mounted/cloud-synced directory. A path inside the active
+  # HERMES_HOME falls back to <HERMES_HOME>/backups to prevent recursive growth.
+  dir: null
+
+
+# =============================================================================
 # Update Behavior
 # =============================================================================
 updates:

@@ -24881,8 +24881,8 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
 
     Refreshes the channel directory every 5 minutes and prunes the
     image/audio/video/document/screenshot caches + expired ``hermes debug
-    share`` pastes once per hour, and polls the curator hourly (its inner
-    gate enforces the real weekly cadence).
+    share`` pastes once per hour, and polls the curator, stale-session archive,
+    and scheduled-backup gates hourly (their inner gates enforce real cadence).
     """
     from gateway.platforms.base import (
         cleanup_audio_cache,
@@ -25007,7 +25007,7 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
             except Exception as e:
                 logger.debug("Auto-archive tick error: %s", e)
 
-        # Scheduled auto-backup (#12238) — piggy-back on the cron ticker so
+        # Scheduled auto-backup (#12238) — piggy-back on housekeeping so
         # long-running gateways get periodic snapshots without a user-created
         # cron job. maybe_create_auto_backup() is internally gated by the
         # backup config block (off by default; cadence from backup.schedule),

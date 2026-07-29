@@ -1662,7 +1662,7 @@ def create_pre_update_backup(
 #     dir: ~/backups       # optional override (default: <HERMES_HOME>/backups)
 #
 # ``maybe_create_auto_backup()`` is cheap when nothing is due (one config read
-# + one small JSON stat) and is polled from the gateway cron ticker, mirroring
+# + one small JSON stat) and is polled from gateway housekeeping, mirroring
 # how agent/curator.py::maybe_run_curator gets its weekly cadence. The real
 # cadence lives here, in the ``last_run_at`` gate — the poll rate doesn't
 # matter. Archives are written with the same exclusion rules and SQLite
@@ -1721,14 +1721,24 @@ def _auto_backup_keep(cfg: dict) -> int:
 
 
 def _auto_backup_dir(cfg: dict, hermes_home: Optional[Path] = None) -> Path:
-    home = hermes_home or get_default_hermes_root()
+    home = hermes_home or get_hermes_home()
+    default_dir = home / _PRE_UPDATE_BACKUPS_DIR
     raw = cfg.get("dir")
     if raw:
         try:
-            return Path(str(raw)).expanduser()
-        except (TypeError, ValueError):
+            custom_dir = Path(str(raw)).expanduser()
+            if custom_dir.resolve().is_relative_to(home.resolve()):
+                logger.warning(
+                    "backup.dir %s is inside HERMES_HOME; using %s to avoid "
+                    "including backup archives in later backups",
+                    custom_dir,
+                    default_dir,
+                )
+                return default_dir
+            return custom_dir
+        except (TypeError, ValueError, OSError, RuntimeError):
             logger.warning("backup.dir %r invalid; using default", raw)
-    return home / _PRE_UPDATE_BACKUPS_DIR
+    return default_dir
 
 
 def _load_auto_backup_state(state_path: Path) -> dict:
@@ -1788,14 +1798,14 @@ def maybe_create_auto_backup(
 
     Gated by ``backup.enabled`` (default false) and ``backup.schedule``.
     Cheap when disabled or not yet due, so callers can poll freely — the
-    gateway cron ticker polls hourly. Returns the archive path when a backup
+    gateway housekeeping polls hourly. Returns the archive path when a backup
     was created, ``None`` otherwise (disabled, not due, or failed).
     """
     cfg = _get_backup_config()
     if not _auto_backup_enabled(cfg):
         return None
 
-    hermes_root = hermes_home or get_default_hermes_root()
+    hermes_root = hermes_home or get_hermes_home()
     if not hermes_root.is_dir():
         return None
 
@@ -1861,7 +1871,7 @@ def list_backup_archives(hermes_home: Optional[Path] = None) -> List[Dict[str, A
     files. Includes the configured ``backup.dir`` when it differs from the
     default location.
     """
-    home = hermes_home or get_default_hermes_root()
+    home = hermes_home or get_hermes_home()
     cfg = _get_backup_config()
     dirs = {home / _PRE_UPDATE_BACKUPS_DIR, _auto_backup_dir(cfg, home)}
 
