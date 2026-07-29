@@ -216,7 +216,54 @@ class TestMaybeCreateAutoBackup:
         _set_cfg(monkeypatch, {"enabled": True, "dir": str(dest)})
         result = B.maybe_create_auto_backup(hermes_home=home)
         assert result is not None
-        assert result.parent == dest
+        assert result.parent == dest / "default"
+
+    def test_shared_custom_dir_is_isolated_per_profile(self, tmp_path, monkeypatch):
+        profiles_root = tmp_path / ".hermes" / "profiles"
+        alpha = profiles_root / "alpha"
+        beta = profiles_root / "beta"
+        for home in (alpha, beta):
+            (home / "skills").mkdir(parents=True)
+            (home / "config.yaml").write_text(
+                "model:\n  provider: openrouter\n", encoding="utf-8"
+            )
+            (home / "skills" / "SKILL.md").write_text(
+                f"# {home.name}\n", encoding="utf-8"
+            )
+
+        shared = tmp_path / "external-drive"
+        _set_cfg(
+            monkeypatch,
+            {
+                "enabled": True,
+                "schedule": "daily",
+                "keep_last": 1,
+                "dir": str(shared),
+            },
+        )
+        first_now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        alpha_first = B.maybe_create_auto_backup(hermes_home=alpha, now=first_now)
+        beta_first = B.maybe_create_auto_backup(hermes_home=beta, now=first_now)
+
+        assert alpha_first is not None and beta_first is not None
+        assert alpha_first.parent == shared / "alpha"
+        assert beta_first.parent == shared / "beta"
+
+        alpha_second = B.maybe_create_auto_backup(
+            hermes_home=alpha,
+            now=first_now + timedelta(hours=25),
+        )
+
+        assert alpha_second is not None
+        assert not alpha_first.exists()
+        assert beta_first.exists()
+        assert [item["path"] for item in B.list_backup_archives(hermes_home=alpha)] == [
+            alpha_second
+        ]
+        assert [item["path"] for item in B.list_backup_archives(hermes_home=beta)] == [
+            beta_first
+        ]
 
     def test_custom_dir_inside_hermes_home_falls_back_without_recursion(
         self, tmp_path, monkeypatch, caplog
@@ -337,11 +384,12 @@ class TestListArchives:
     def test_includes_custom_dir(self, tmp_path, monkeypatch):
         home = _make_home(tmp_path)
         dest = tmp_path / "elsewhere"
-        dest.mkdir()
-        (dest / "auto-2026-01-01-000000.zip").write_bytes(b"a")
+        profile_dest = dest / "default"
+        profile_dest.mkdir(parents=True)
+        (profile_dest / "auto-2026-01-01-000000.zip").write_bytes(b"a")
         _set_cfg(monkeypatch, {"dir": str(dest)})
         archives = B.list_backup_archives(hermes_home=home)
-        assert [a["path"].parent for a in archives] == [dest]
+        assert [a["path"].parent for a in archives] == [profile_dest]
 
     def test_sorted_newest_first(self, tmp_path, monkeypatch):
         import os

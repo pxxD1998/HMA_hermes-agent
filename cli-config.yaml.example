@@ -1523,8 +1523,9 @@ backup:
   enabled: false
   schedule: "daily"  # hourly | daily | weekly | numeric hours
   keep_last: 7
-  # Optional external/mounted/cloud-synced directory. A path inside the active
-  # HERMES_HOME falls back to <HERMES_HOME>/backups to prevent recursive growth.
+  # Optional external/mounted/cloud-synced root. Scheduled backups are stored
+  # under <dir>/<profile-name>/ so state, retention, and listing remain isolated.
+  # A path inside the active HERMES_HOME falls back to <HERMES_HOME>/backups.
   dir: null
 
 

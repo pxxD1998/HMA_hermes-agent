@@ -1720,6 +1720,17 @@ def _auto_backup_keep(cfg: dict) -> int:
         return _AUTO_DEFAULT_KEEP
 
 
+def _auto_backup_profile_namespace(hermes_home: Path) -> str:
+    """Return the safe directory name for an active profile's external backups."""
+    try:
+        resolved = hermes_home.resolve()
+    except (OSError, RuntimeError):
+        resolved = hermes_home
+    if resolved.parent.name == "profiles" and resolved.name:
+        return resolved.name
+    return "default"
+
+
 def _auto_backup_dir(cfg: dict, hermes_home: Optional[Path] = None) -> Path:
     home = hermes_home or get_hermes_home()
     default_dir = home / _PRE_UPDATE_BACKUPS_DIR
@@ -1735,7 +1746,7 @@ def _auto_backup_dir(cfg: dict, hermes_home: Optional[Path] = None) -> Path:
                     default_dir,
                 )
                 return default_dir
-            return custom_dir
+            return custom_dir / _auto_backup_profile_namespace(home)
         except (TypeError, ValueError, OSError, RuntimeError):
             logger.warning("backup.dir %r invalid; using default", raw)
     return default_dir

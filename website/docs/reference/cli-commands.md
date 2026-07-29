@@ -931,15 +931,20 @@ backup:
 
 While the gateway is running, it checks hourly whether a backup is due and
 writes `auto-<timestamp>.zip` to the backup directory, pruning the oldest
-archives beyond `keep_last`. Archives use the same exclusion rules and
-WAL-safe SQLite copies as `hermes backup`, and restore with `hermes import`.
+archives beyond `keep_last`. For a custom `dir`, each profile writes beneath
+its own `<dir>/<profile-name>/` subdirectory (`default` for the default profile),
+so cadence state, retention, and `hermes backup --list` remain profile-isolated.
+Archives use the same exclusion rules and WAL-safe SQLite copies as
+`hermes backup`, and restore with `hermes import`.
 
 Point `dir` at a mounted external drive or a cloud-synced folder (Dropbox,
-Syncthing, etc.) to get off-machine copies. A configured directory inside the
-active HERMES_HOME safely falls back to `<HERMES_HOME>/backups/` so a later
-archive cannot recursively include earlier archives. Note the schedule is
-driven by the gateway process — CLI-only installs without a running gateway
-should use `hermes backup` directly or a system scheduler.
+Syncthing, etc.) to get off-machine copies. Treat `dir` as the shared root;
+Hermes creates the active profile's subdirectory below it. A configured
+directory inside the active HERMES_HOME safely falls back to
+`<HERMES_HOME>/backups/` so a later archive cannot recursively include earlier
+archives. Note the schedule is driven by the gateway process — CLI-only
+installs without a running gateway should use `hermes backup` directly or a
+system scheduler.
 
 ## `hermes checkpoints`
 
