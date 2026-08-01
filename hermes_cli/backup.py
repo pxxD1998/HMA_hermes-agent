@@ -1721,14 +1721,22 @@ def _auto_backup_keep(cfg: dict) -> int:
 
 
 def _auto_backup_profile_namespace(hermes_home: Path) -> str:
-    """Return the safe directory name for an active profile's external backups."""
+    """Return the safe logical profile name for external backups.
+
+    Inspect the un-resolved path first: a named profile directory may itself be
+    a symlink, and resolving it would discard the ``profiles/<name>`` identity
+    that must isolate schedule state, retention, and archive listings.
+    """
+    if hermes_home.parent.name != "profiles" or not hermes_home.name:
+        return "default"
+
     try:
-        resolved = hermes_home.resolve()
-    except (OSError, RuntimeError):
-        resolved = hermes_home
-    if resolved.parent.name == "profiles" and resolved.name:
-        return resolved.name
-    return "default"
+        from hermes_cli.profiles import validate_profile_name
+
+        validate_profile_name(hermes_home.name)
+    except (ImportError, ValueError):
+        return "default"
+    return hermes_home.name
 
 
 def _auto_backup_dir(cfg: dict, hermes_home: Optional[Path] = None) -> Path:

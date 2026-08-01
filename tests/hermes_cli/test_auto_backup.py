@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 import threading
 import zipfile
 from argparse import Namespace
@@ -264,6 +265,48 @@ class TestMaybeCreateAutoBackup:
         assert [item["path"] for item in B.list_backup_archives(hermes_home=beta)] == [
             beta_first
         ]
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Creating directory symlinks requires elevated privileges on Windows",
+    )
+    def test_shared_custom_dir_preserves_symlink_profile_names(
+        self, tmp_path, monkeypatch
+    ):
+        profiles_root = tmp_path / ".hermes" / "profiles"
+        profiles_root.mkdir(parents=True)
+        target_root = tmp_path / "profile-targets"
+        alpha_target = target_root / "first"
+        beta_target = target_root / "second"
+        for target in (alpha_target, beta_target):
+            (target / "skills").mkdir(parents=True)
+            (target / "config.yaml").write_text(
+                "model:\n  provider: openrouter\n", encoding="utf-8"
+            )
+            (target / "skills" / "SKILL.md").write_text(
+                f"# {target.name}\n", encoding="utf-8"
+            )
+
+        alpha = profiles_root / "alpha"
+        beta = profiles_root / "beta"
+        alpha.symlink_to(alpha_target, target_is_directory=True)
+        beta.symlink_to(beta_target, target_is_directory=True)
+
+        shared = tmp_path / "external-drive"
+        _set_cfg(
+            monkeypatch,
+            {"enabled": True, "schedule": "daily", "dir": str(shared)},
+        )
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+        alpha_backup = B.maybe_create_auto_backup(hermes_home=alpha, now=now)
+        beta_backup = B.maybe_create_auto_backup(hermes_home=beta, now=now)
+
+        assert alpha_backup is not None and beta_backup is not None
+        assert alpha_backup.parent == shared / "alpha"
+        assert beta_backup.parent == shared / "beta"
+        assert (shared / "alpha" / B._AUTO_STATE_FILE).is_file()
+        assert (shared / "beta" / B._AUTO_STATE_FILE).is_file()
 
     def test_custom_dir_inside_hermes_home_falls_back_without_recursion(
         self, tmp_path, monkeypatch, caplog
