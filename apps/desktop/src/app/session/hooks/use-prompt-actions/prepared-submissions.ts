@@ -43,6 +43,10 @@ const SPENT_PREFIX = 'hermes.desktop.preparedSubmissions.spent.v2:'
 // The pre-v2 single blob: still honored, drained entry by entry as each tombstone clears.
 const LEGACY_SPENT_KEY = 'hermes.desktop.preparedSubmissions.spent.v1'
 const retired = new Map<string, string>()
+// Entries this window wrote that the origin's storage refused. They stay adoptable here, so a
+// lost acknowledgement still reuses this send's identity instead of submitting the text again;
+// they die with the window, which is exactly when the journal's reload recovery would have ended.
+const unstored = new Map<string, PreparedSubmission>()
 
 function readLegacySpent(): Record<string, string> {
   const raw = window.localStorage.getItem(LEGACY_SPENT_KEY)
@@ -137,6 +141,12 @@ async function readJournal(): Promise<Record<string, PreparedSubmission>> {
       // different send (under its own key, or the earlier build's blob). Nothing is left to hide.
       clearSpent(key)
     }
+  }
+
+  // Entries this window could not store are its own: visible here until the window ends, and a
+  // retirement removes them with the stored copy.
+  for (const [key, entry] of unstored) {
+    if (!(key in journal)) { journal[key] = entry }
   }
 
   return journal
@@ -313,8 +323,21 @@ export async function writePreparedSubmission(key: string, entry: PreparedSubmis
 
   // Browser-only clients retain reload recovery, not a process-crash guarantee.
   // Native write failures never fall back here: sending requires their ACK.
-  window.localStorage.setItem(ENTRY_PREFIX + key, JSON.stringify(entry))
-  clearSpent(key)
+  //
+  // A full origin quota must not fail the send this journal records. The browser copy buys
+  // reload recovery only, and a phone reaches the quota with an ordinary draft: every image chip
+  // carries a bounded data URL, and the crash-recovery journals share the same origin budget.
+  // Dropping the entry costs the reload, not the turn — keep it adoptable for this window so a
+  // lost acknowledgement still reuses the same submission identity.
+  try {
+    window.localStorage.setItem(ENTRY_PREFIX + key, JSON.stringify(entry))
+    unstored.delete(key)
+  } catch (error) {
+    unstored.set(key, entry)
+    console.warn('[prepared-submission-unstored]', error)
+  }
+
+  try { clearSpent(key) } catch (error) { console.warn('[prepared-submission-tombstone]', error) }
 }
 
 /** Retire an admitted entry. Its identity is spent — durably, in a separate store — before the
@@ -322,6 +345,7 @@ export async function writePreparedSubmission(key: string, entry: PreparedSubmis
  *  later read (this window, a reload, another window) hides and retries, never a reusable one. */
 export async function removePreparedSubmission(key: string, id: string): Promise<void> {
   retired.set(key, id)
+  unstored.delete(key)
 
   // The tombstone store failing too (quota) leaves the in-memory mark; the removal still runs.
   try { writeSpent(key, id) } catch (error) { console.warn('[prepared-submission-tombstone]', error) }

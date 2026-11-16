@@ -1,6 +1,6 @@
 import { afterEach, expect, test, vi } from 'vitest'
 
-import { listPreparedImageDrafts, type PreparedSubmission, preparedSubmissionKey, readPreparedSubmission, removePreparedSubmission, writePreparedSubmission } from './prepared-submissions'
+import { adoptPreparedSubmission, listPreparedImageDrafts, type PreparedSubmission, preparedSubmissionKey, readPreparedSubmission, removePreparedSubmission, writePreparedSubmission } from './prepared-submissions'
 import { storedJournal } from './prepared-submissions-test-utils'
 import type { SubmissionDestination } from './submission-destination'
 
@@ -62,6 +62,32 @@ test('native preparation waits for acknowledgement and never downgrades a write 
   expect(await readPreparedSubmission('key')).toEqual(entry)
   await removePreparedSubmission('key', 'a')
   expect(await readPreparedSubmission('key')).toBeUndefined()
+})
+
+test('a browser journal the origin cannot hold stays adoptable and never fails the write', async () => {
+  vi.stubGlobal('hermesDesktop', undefined)
+  const destination = { scopeKey: 'webapp::default' } as SubmissionDestination
+  const owner = { connectionId: 'local', profile: 'default' }
+  const entry: PreparedSubmission = { id: 'send-1', text: '全面做功課', attachments: [], params: { submission_id: 'send-1' }, owner }
+  const intent = preparedSubmissionKey('stored', destination, entry.text, entry.attachments)
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  const setItem = vi.spyOn(window.localStorage, 'setItem').mockImplementation(() => {
+    throw new DOMException("Failed to execute 'setItem' on 'Storage': Setting the value exceeded the quota.", 'QuotaExceededError')
+  })
+
+  try {
+    // The send path awaits this before prompt.submit: a full quota must not reject there.
+    await expect(writePreparedSubmission(intent, entry)).resolves.toBeUndefined()
+    expect(warn).toHaveBeenCalledWith('[prepared-submission-unstored]', expect.anything())
+    // Still adoptable in this window, so a lost acknowledgement reuses the same identity.
+    expect((await adoptPreparedSubmission(intent, 'send-1'))?.entry.text).toBe('全面做功課')
+    // A retirement drops the in-memory copy with the stored one.
+    await removePreparedSubmission(intent, 'send-1')
+    expect(await readPreparedSubmission(intent)).toBeUndefined()
+  } finally {
+    setItem.mockRestore()
+    warn.mockRestore()
+  }
 })
 
 // One browser tab: its own module instance over the origin's shared localStorage.
